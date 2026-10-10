@@ -323,26 +323,28 @@
            [[] 0] specs)))
 
 (defn- field-plans
-  "Per table result: for each Component spec, [base-pointer stride]. A field
-  matched on another entity (inherited, singleton) is one shared value, so its
-  stride is 0 rather than the component size."
+  "Per table result: for each Component spec, [base-pointer stride],
+  defaulting to `nil` for missing optional values and non-component specs.
+  A field matched on another entity (inherited, singleton) is one shared value,
+  so its stride is 0 rather than the component size."
   [it specs tis]
   (mapv (fn [spec ti]
-          (when ti
+          (when (and ti (f/it-set? it ti))
             [(f/it-field it (:size spec) ti)
              (if (f/it-self? it ti) (:size spec) 0)]))
         specs tis))
 
 (defn- decode-row
-  "Decode one row of a positioned iterator into the arg vector for `specs`."
+  "Decode one row of a positioned iterator into the arg vector for `specs`.
+  An unset field binds nil."
   [it ents row specs plans]
   (mapv (fn [spec plan]
           (cond
             (instance? Component spec)
-            (let [[p stride] plan
-                  at (+ p (* row stride))]
-              (into {} (map (fn [k] [k (ffi/read-field at (:layout spec) k)])
-                            (map first (:fields spec)))))
+            (when-let [[p stride] plan]
+              (let [at (+ p (* row stride))]
+                (into {} (map (fn [k] [k (ffi/read-field at (:layout spec) k)])
+                              (map first (:fields spec))))))
 
             (= spec :ent) (ffi/read ents :uint64 (* 8 row))
             (= spec :dt) (f/it-dt it)

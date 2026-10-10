@@ -269,6 +269,24 @@
       (is (= (repeat 4 {:x 7.0 :y 7.0})
              (ec/with-query w [p Position] p))))))
 
+(deftest optional-term-binds-nil
+  ;; an optional term has no column on tables without the component; its
+  ;; binding is nil there. Systems and observers decode through the same path.
+  (ec/with-world w
+    (ec/entity! w :a Position {:x 1 :y 1})
+    (ec/entity! w :b Position {:x 2 :y 2} Velocity {:x 5 :y 5})
+    (is (= #{[1.0 nil] [2.0 {:x 5.0 :y 5.0}]}
+           (set (ec/iter-rows w "Position, ?Velocity" [Position Velocity :ent]
+                              (fn [[p v _]] [(:x p) v])))))))
+
+(deftest non-component-spec-first
+  ;; a non-component spec ahead of a component keeps its place, so the
+  ;; component still decodes from its own field
+  (ec/with-world w
+    (let [a (ec/entity! w :a Position {:x 1 :y 2})]
+      (is (= [[a {:x 1.0 :y 2.0}]]
+             (ec/with-query w [e :ent p Position] [e p]))))))
+
 (deftest deferred-add-in-system
   (ec/with-world w
     (ec/entity! w :a Position {:x 1 :y 1})
