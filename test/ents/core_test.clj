@@ -6,6 +6,7 @@
 (def Position (ec/component Position [:x :float] [:y :float]))
 (def Velocity (ec/component Velocity [:x :float] [:y :float]))
 (def Health   (ec/component Health [:hp :int32]))
+(def my-pos   (ec/component my-pos [:x :float]))
 
 (deftest world-lifecycle
   (ec/with-world w
@@ -286,6 +287,54 @@
     (let [a (ec/entity! w :a Position {:x 1 :y 2})]
       (is (= [[a {:x 1.0 :y 2.0}]]
              (ec/with-query w [e :ent p Position] [e p]))))))
+
+(deftest kebab-case-component-names
+  ;; flecs' query DSL can't parse a "-" in an identifier
+  (ec/with-world w
+    (let [a (ec/entity! w :a my-pos {:x 1})
+          ran (atom [])
+          seen (atom [])]
+      (is (= [[a 1.0]] (ec/with-query w [p my-pos e :ent] [e (:x p)])))
+      (is (= [{:e a :my-pos {:x 1.0}}] (ec/query w [my-pos])))
+      (is (= "my-pos" (ec/ent-name-of w my-pos)))
+      (is (ec/has? w a :my-pos))
+      (ec/system! w :s [p my-pos] (swap! ran conj (:x p)))
+      (ec/progress w 0.1)
+      (is (= [1.0] @ran))
+      (ec/observer! w :o [p my-pos] (swap! seen conj (:x p)))
+      (ec/set-c! w :a my-pos {:x 2})
+      (is (= [2.0] @seen)))))
+
+(deftest generated-query-errors-name-components
+  ;; a query built from specs names its components by id (#491), so a
+  ;; rejected one carries the names those ids stand for
+  (ec/with-world w
+    (let [term (str "#" (ec/comp-id w my-pos))
+          data (fn [thunk] (try (thunk) nil (catch Exception e (ex-data e))))
+          it-new f/it-new]
+      (with-redefs [f/it-new (fn [w _] (it-new w "NoSuchThing"))]
+        (is (= {term "my-pos"}
+               (:terms (data #(ec/with-query w [p my-pos] p)))
+               (:terms (data #(ec/query w [my-pos]))))))
+      (with-redefs [f/system* (fn [& _] 0)
+                    f/observer* (fn [& _] 0)]
+        (is (= {term "my-pos"}
+               (:terms (data #(ec/system! w :s [p my-pos] nil)))
+               (:terms (data #(ec/observer! w :o [p my-pos] nil)))))))))
+
+(deftest hand-written-query-error-data
+  ;; a hand-written expr is reported as written, with no :terms
+  (ec/with-world w
+    (is (= {:expr "NoSuchThing"}
+           (try (ec/iter-rows w "NoSuchThing" [] identity) nil
+                (catch Exception e (ex-data e)))))))
+
+(deftest with-query-evaluates-specs-once
+  (ec/with-world w
+    (ec/entity! w :a Position {:x 1 :y 1})
+    (let [n (atom 0)]
+      (ec/with-query w [p (do (swap! n inc) Position)] p)
+      (is (= 1 @n)))))
 
 (deftest deferred-add-in-system
   (ec/with-world w

@@ -312,6 +312,18 @@
        (map :name)
        (str/join ", ")))
 
+(defn- spec-expr
+  "Like binding-expr, but each component is written as its raw id in `w`
+  (#491), since flecs' query DSL can't parse names such as my-pos. Returns
+  {:expr expr :terms {\"#491\" \"my-pos\"}}, the terms naming each id for
+  error data."
+  [w specs]
+  (let [terms (->> specs
+                   (filter (partial instance? Component))
+                   (mapv (fn [c] [(str "#" (comp-id w c)) (:name c)])))]
+    {:expr (str/join ", " (map first terms))
+     :terms (into {} terms)}))
+
 (defn- term-indexes
   "For each spec, its query term index when it is a Component, else nil."
   [specs]
@@ -362,14 +374,13 @@
     (comp-id w s))
   specs)
 
-(defn iter-rows
-  "Drive a fresh query iterator over `expr`, calling (f args) per row with
-  args decoded from `specs`. Returns a vector of f's results."
-  [w expr specs f]
+(defn- iter-rows*
+  "iter-rows, with `data` as the ex-data when flecs rejects the expr."
+  [w expr specs f data]
   (register-specs! w specs)
   (let [it (f/it-new w expr)]
     (when (ffi/null? it)
-      (throw (ex-info "invalid query" {:expr expr})))
+      (throw (ex-info "invalid query" data)))
     (try
       (let [tis (term-indexes specs)]
         (loop [out []]
@@ -382,6 +393,18 @@
                            (map (fn [row] (f (decode-row it ents row specs plans))))
                            (range n)))))))
       (finally (f/it-fini it)))))
+
+(defn iter-rows
+  "Drive a fresh query iterator over `expr`, calling (f args) per row with
+  args decoded from `specs`. Returns a vector of f's results."
+  [w expr specs f]
+  (iter-rows* w expr specs f {:expr expr}))
+
+(defn- iter-specs
+  "iter-rows over the query `specs` make, built by spec-expr."
+  [w specs f]
+  (let [{:keys [expr] :as data} (spec-expr w specs)]
+    (iter-rows* w expr specs f data)))
 
 (defn each-row
   "Call (f args) for every row of a callback's already-positioned iterator.
@@ -401,10 +424,10 @@
       (query w [Position Velocity])"
   [w comps]
   (let [ks (mapv (fn [c] (keyword (:name c))) comps)]
-    (iter-rows w (binding-expr comps) (conj (vec comps) :ent)
-               (fn [args]
-                 (into {:e (peek args)}
-                       (map (fn [k v] [k v]) ks args))))))
+    (iter-specs w (conj (vec comps) :ent)
+                (fn [args]
+                  (into {:e (peek args)}
+                        (map (fn [k v] [k v]) ks args))))))
 
 (defn count-q
   "Number of entities matching the flecs DSL expr."
@@ -426,8 +449,8 @@
   (let [pairs (vec (map vec (partition 2 bindings)))
         syms (mapv first pairs)
         specs (mapv second pairs)]
-    `(iter-rows ~w (binding-expr [~@specs]) [~@specs]
-                (fn [~syms] ~@body))))
+    `(#'iter-specs ~w [~@specs]
+                   (fn [~syms] ~@body))))
 
 ;; --- systems ----------------------------------------------------------------------
 
@@ -455,16 +478,19 @@
    [:pointer] :void))
 
 (defn- register-poly!
-  "Create a system/observer through `make` (given the callback address),
-  replacing any prior one of the same name and releasing its callback."
+  "Create a system/observer through `make` (given the query expr and the
+  callback address), replacing any prior one of the same name and releasing
+  its callback."
   [w n specs f make]
   (register-specs! w specs)
-  (let [old (f/lookup w n)
+  (let [{:keys [expr terms]} (spec-expr w specs)
+        old (f/lookup w n)
         cb (row-callback w specs f)
-        id (make cb)]
+        id (make expr cb)]
     (when (zero? id)
       (ffi/free-callable cb)
-      (throw (ex-info "flecs rejected the system/observer" {:name n})))
+      (throw (ex-info "flecs rejected the system/observer"
+                      {:name n :expr expr :terms terms})))
     (when (and (pos? old) (not= old id)) (free-callable! w old))
     (track-callable! w id cb)
     id))
@@ -475,7 +501,7 @@
   [w n specs phase f]
   (let [ph (phase-id phase)]
     (register-poly! w n specs f
-                    #(f/system* w n (binding-expr specs) ph %))))
+                    #(f/system* w n %1 ph %2))))
 
 (defmacro system!
   "Register a system that runs on every (progress w dt), body per row:
@@ -514,8 +540,8 @@
       (throw (ex-info "observer events must be :add, :set or :remove"
                       {:events events})))
     (register-poly! w n specs f
-                    #(f/observer* w n (binding-expr specs)
-                                  (str/join "," (map clojure.core/name evs)) %))))
+                    #(f/observer* w n %1
+                                  (str/join "," (map clojure.core/name evs)) %2))))
 
 (defmacro observer!
   "Register an observer whose body runs per row when an event fires:
