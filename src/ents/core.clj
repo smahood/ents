@@ -200,15 +200,48 @@
     (if (integer? v) v (long v))
     v))
 
+(defn- scalar-type
+  "The type of field `k` of component `c`, given its {field type} map.
+  Throws for an unknown field, and for an array or struct field, which
+  set-c! can't write."
+  [c types k]
+  (let [t (get types k)]
+    (cond
+      (nil? t)
+      (throw (ex-info (str "unknown field " (pr-str k) " for component " (:name c))
+                      {:component (:name c) :field k}))
+
+      (not (keyword? t))
+      (throw (ex-info (str "field " (pr-str k) " of component " (:name c)
+                           " is an array or struct; set-c! writes scalar fields only")
+                      {:component (:name c) :field k :type t}))
+
+      :else t)))
+
 (defn- write-component!
   "Write component values: ensure (adds a missing component zeroed, emitting
   OnAdd), merge `m` over it in place, then mark it modified so OnSet observers
-  fire with the final values. Fields not in `m` keep their current value."
+  fire with the final values. Fields not in `m` keep their current value.
+
+  Every value is checked first: an unknown, array or struct field throws, and
+  each value is written to a scratch copy, so one jolt.ffi rejects (out of
+  range, wrong type) throws before the entity or its component is touched.
+  The real write then goes to each field's offset in the ensured component,
+  which inside a system is flecs' queued value, so partial sets in one run
+  merge."
   [w e ^Component c m]
   (let [id (comp-id w c)
-        p (guarded w (f/ensure-ptr w e id (:size c)))
-        types (into {} (:fields c))]
-    (doseq [[k v] m] (ffi/write-field p (:layout c) k (coerce v (get types k))))
+        types (into {} (:fields c))
+        writes (ffi/with-alloc [scratch (:size c)]
+                 (mapv (fn [[k v]]
+                         (let [t (scalar-type c types k)
+                               off (ffi/field-offset (:layout c) k)
+                               v (coerce v t)]
+                           (ffi/write scratch t v off)
+                           [t v off]))
+                       m))
+        p (guarded w (f/ensure-ptr w e id (:size c)))]
+    (doseq [[t v off] writes] (ffi/write p t v off))
     (guarded w (f/modified! w e id))
     e))
 

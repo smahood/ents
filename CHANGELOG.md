@@ -38,6 +38,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gone. `coerce` truncates a double for the integer type names as well as
   the sized ones.
 
+- **`set-c!` checks every value before writing any.** `write-component!`
+  looks up each field's type and offset, and writes the value into a
+  scratch copy of the component first, which is where jolt.ffi rejects a
+  bad value. Only then does it ensure the component and write each value at
+  its offset, rather than through `ffi/write-field`, which finds the field
+  by name on every call. `set-c!` costs about the same as before.
+
+- **`set-c!` names the field it can't write.** An unknown field throws
+  "unknown field :mana for component Health", where jolt.ffi said the field
+  path "names a struct or array". An array or struct field throws "field
+  :v of component Shapes is an array or struct; set-c! writes scalar
+  fields only", where jolt.ffi named its own write types. The ex-data
+  holds `:component` and `:field`, and `:type` for an array or struct
+  field. Writing those fields never worked; only the message is new.
+
 ### Fixed
 
 - **An optional query term (`?Velocity`) binds `nil` where it isn't set.**
@@ -66,3 +81,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   go to jolt.ffi as they are. A `:bool` is stored by truthiness, so `nil`
   and `false` store false and anything else stores true, `0` included. A
   `:char` takes a char (`\A`).
+
+- **A `set-c!` that fails changes nothing.** Fields were written one at a
+  time, and the component was only marked modified after the last. A value
+  that couldn't be written (out of range, not a number, an unknown field)
+  threw part way through, leaving the earlier fields changed and OnSet
+  observers never told. On an entity without the component, the component
+  was added anyway. The same went for `entity!` with component values. Now
+  nothing is written and nothing is added unless every value can be.
+  Values jolt.ffi accepts but wraps, such as `-1` into a `:uint32`, are
+  still written as jolt writes them.

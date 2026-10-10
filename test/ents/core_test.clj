@@ -250,6 +250,9 @@
 (def CTypes (ec/component CTypes [:c :char] [:s :short] [:us :ushort] [:i :int]
                           [:ui :uint] [:l :long] [:ul :ulong] [:z :size_t]
                           [:sz :ssize_t] [:b :byte] [:p :pointer]))
+(def Wide (ec/component Wide [:u :uint64] [:i :int64] [:d :double]))
+(def Shapes (ec/component Shapes [:v [:array :float 3]]
+                          [:pos [:struct [[:x :float] [:y :float]]]] [:n :int32]))
 
 (deftest partial-set-zeroes-new-component
   (ec/with-world w
@@ -262,6 +265,93 @@
   (ec/with-world w
     (let [e (ec/anon! w Stats {:a 40000 :b 3000000000 :c 200 :d -5})]
       (is (= {:a 40000 :b 3000000000 :c 200 :d -5} (ec/get-c w e Stats))))))
+
+(deftest failed-set-writes-nothing
+  ;; a value that can't be written leaves the component as it was, with no
+  ;; OnSet, rather than changing the fields written before it
+  (ec/with-world w
+    (let [sets (atom 0)]
+      (ec/observer! w :watch [s Stats :events #{:set}] (swap! sets inc))
+      (ec/entity! w :e Stats {:a 1 :c 1})
+      (reset! sets 0)
+      (doseq [m [{:a 99 :c 300}    ; out of range for :uint8
+                 {:a 99 :mana 3}   ; unknown field
+                 {:a 99 :c :lots}]] ; not a number
+        (is (thrown? Exception (ec/set-c! w :e Stats m)) (pr-str m))
+        (is (= {:a 1 :b 0 :c 1 :d 0} (ec/get-c w :e Stats)) (pr-str m)))
+      (is (= 0 @sets))
+      (testing "a component the entity lacks isn't added"
+        (ec/entity! w :f)
+        (is (thrown? Exception (ec/set-c! w :f Stats {:a 1 :c 300})))
+        (is (false? (ec/has? w :f Stats)))
+        (is (thrown? Exception (ec/entity! w :g Stats {:a 1 :c 300})))
+        (is (false? (ec/has? w :g Stats)))))))
+
+(deftest set-c-field-errors
+  ;; set-c! names the field it can't write, and writes nothing
+  (ec/with-world w
+    (ec/entity! w :e Health {:hp 1})
+    (let [err (fn [c m]
+                (try (ec/set-c! w :e c m) nil
+                     (catch Exception e [(ex-message e) (ex-data e)])))]
+      (is (= ["unknown field :mana for component Health"
+              {:component "Health" :field :mana}]
+             (err Health {:hp 2 :mana 3})))
+      (is (= ["unknown field \"hp\" for component Health"
+              {:component "Health" :field "hp"}]
+             (err Health {"hp" 3})))
+      (is (= ["field :v of component Shapes is an array or struct; set-c! writes scalar fields only"
+              {:component "Shapes" :field :v :type [:array :float 3]}]
+             (err Shapes {:n 1 :v [1.0 2.0 3.0]})))
+      (is (= ["field :pos of component Shapes is an array or struct; set-c! writes scalar fields only"
+              {:component "Shapes" :field :pos :type [:struct [[:x :float] [:y :float]]]}]
+             (err Shapes {:n 1 :pos {:x 1.0 :y 2.0}}))))
+    (is (= {:hp 1} (ec/get-c w :e Health)))
+    (is (false? (ec/has? w :e Shapes)))))
+
+(deftest bad-value-skips-on-add
+  ;; values are checked before the component is added, so a bad value
+  ;; throws its own error and OnAdd observers never run
+  (ec/with-world w
+    (let [adds (atom 0)]
+      (ec/observer! w :o [h Health :events #{:add}]
+        (swap! adds inc)
+        (throw (ex-info "observer boom" {})))
+      (ec/entity! w :x)
+      (is (thrown-with-msg? Exception #"Number" (ec/set-c! w :x Health {:hp :lots})))
+      (is (= 0 @adds))
+      (is (false? (ec/has? w :x Health))))))
+
+(deftest on-add-observer-writes-kept
+  ;; set-c! adds the component (OnAdd) before writing its values, so a
+  ;; field an OnAdd observer sets and set-c! doesn't is kept
+  (ec/with-world w
+    (ec/observer! w :o [s Stats e :ent :events #{:add}]
+      (ec/set-c! w e Stats {:b 7}))
+    (ec/entity! w :e)
+    (ec/set-c! w :e Stats {:a 1})
+    (is (= {:a 1 :b 7 :c 0 :d 0} (ec/get-c w :e Stats)))))
+
+(deftest set-c-empty-map
+  ;; an empty or nil map adds the component zeroed and still fires OnSet
+  (ec/with-world w
+    (let [sets (atom 0)]
+      (ec/observer! w :o [h Health] (swap! sets inc))
+      (ec/entity! w :e)
+      (ec/set-c! w :e Health {})
+      (is (= {:hp 0} (ec/get-c w :e Health)))
+      (ec/set-c! w :e Health nil)
+      (is (= {:hp 0} (ec/get-c w :e Health)))
+      (is (= 2 @sets)))))
+
+(deftest wide-values
+  ;; the widest values of the 64-bit types survive the offset writes
+  (ec/with-world w
+    (let [vs {:u 18446744073709551615N :i -9223372036854775808 :d 1.5e300}
+          e (ec/anon! w Wide vs)]
+      (is (= vs (ec/get-c w e Wide)))
+      (ec/set-c! w e Wide {:u 0 :i 9223372036854775807})
+      (is (= {:u 0 :i 9223372036854775807 :d 1.5e300} (ec/get-c w e Wide))))))
 
 (deftest bool-fields
   ;; a :bool stores by jolt truthiness: nil and false store false, anything
@@ -375,6 +465,20 @@
         (ec/set-c! w e Velocity {:x 2})))
     (ec/progress w 0.1)
     (is (= {:x 2.0 :y 0.0} (ec/get-c w :a Velocity)))))
+
+(deftest partial-sets-in-system-merge
+  ;; in a system flecs queues the add of a new component, so a second
+  ;; partial set-c! has to merge into the queued value, not start from zero
+  (ec/with-world w
+    (ec/entity! w :a Position {:x 0 :y 0})
+    (ec/system! w :s [p Position e :ent]
+      (ec/set-c! w e Position {:x 1})
+      (ec/set-c! w e Position {:y 2})
+      (ec/set-c! w e Velocity {:x 3})
+      (ec/set-c! w e Velocity {:y 4}))
+    (ec/progress w 0.1)
+    (is (= {:x 1.0 :y 2.0} (ec/get-c w :a Position)))
+    (is (= {:x 3.0 :y 4.0} (ec/get-c w :a Velocity)))))
 
 (deftest on-set-fires-once-per-set
   (ec/with-world w
