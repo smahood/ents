@@ -97,6 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entity and apply the args (`apply-args!`). A tag or pair arg is checked
   with `known-id`, so checking doesn't create it.
 
+- **ents' per-world registries are `defonce`.** `*comp-ids`, `*cb-errors`
+  and `*callables` keep their contents when `ents.core` is reloaded.
+
 ### Fixed
 
 - **An optional query term (`?Velocity`) binds `nil` where it isn't set.**
@@ -209,3 +212,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first `nil`, and everything after it was ignored without an error,
   so `(entity! w :e (when boss? :Boss) Health {:hp 100})` never set Health
   when the `when` gave `nil`. Optional args can now be written that way.
+
+- **Reloading `ents.core` at the REPL no longer forgets the live worlds.**
+  `(require 'ents.core :reload)` replaced ents' per-world registries with
+  empty ones. Systems and observers kept running, but the callbacks
+  created before the reload were no longer tracked, so redefining a system
+  or destroying the world never freed them, and a callback error waiting
+  to be rethrown was lost.

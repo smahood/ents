@@ -29,8 +29,10 @@
     `(let [layout# (ffi/layout [:struct ~flds])]
        (->Component ~(str sym) layout# (ffi/layout-size layout#) ~flds))))
 
-;; registered components per world: {world-pointer {name [id size alignment]}}
-(def ^:private *comp-ids (atom {}))
+;; registered components per world: {world-pointer {name [id size alignment]}}.
+;; This and the other per-world registries below are defonce, so reloading
+;; ents.core at the REPL doesn't forget the worlds that are alive.
+(defonce ^:private *comp-ids (atom {}))
 
 (defn- layout-mismatch
   "The error for a definition of component `n` whose size and alignment
@@ -160,7 +162,7 @@
 ;; that world while it is pending, and the op that drove flecs rethrows it on
 ;; return. Errors are held per world, so worlds driven from different threads
 ;; don't see each other's.
-(def ^:private *cb-errors (atom {}))
+(defonce ^:private *cb-errors (atom {}))
 
 (defn- take-cb-error!
   "Remove and return w's pending callback error, if any."
@@ -181,7 +183,7 @@
 ;; foreign-callables per world: {world-pointer {system/observer-id address}}.
 ;; Each is locked in memory until freed, so they are released when their
 ;; system is replaced and when the world is destroyed.
-(def ^:private *callables (atom {}))
+(defonce ^:private *callables (atom {}))
 
 (defn- track-callable! [w id cb]
   (swap! *callables assoc-in [w id] cb))

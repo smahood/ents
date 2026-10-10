@@ -757,6 +757,30 @@
     (ec/destroy! w)
     (is (nil? (callables w)))))
 
+(deftest reload-keeps-registries
+  ;; reloading ents.core at the REPL must not forget what ents tracks per
+  ;; world: callbacks would never be freed, and a pending callback error
+  ;; would be lost
+  (let [w (ec/make-world)
+        err (ex-info "pending" {})]
+    (try
+      (ec/system! w :s [p Position] nil)
+      (ec/comp-id w Position)
+      (swap! @#'ec/*cb-errors assoc w err)
+      (let [cbs (callables w)
+            ids (get @@#'ec/*comp-ids w)]
+        (require 'ents.core :reload)
+        (is (= cbs (callables w)))
+        (is (= ids (get @@#'ec/*comp-ids w)))
+        (is (identical? err (get @@#'ec/*cb-errors w)))
+        (swap! @#'ec/*cb-errors dissoc w)
+        (testing "a system defined before the reload is still freed when replaced"
+          (ec/system! w :s [p Position] nil)
+          (is (= 1 (count (callables w))))
+          (is (not= cbs (callables w)))))
+      (finally (ec/destroy! w)))
+    (is (nil? (callables w)))))
+
 (deftest count-q-bad-expr
   (ec/with-world w
     (is (thrown? Exception (ec/count-q w "NoSuchThing")))))
