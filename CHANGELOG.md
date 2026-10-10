@@ -90,6 +90,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `f/component-size`), and `delete!` checks whether the entity is one
   of flecs' own. flecs' tags and traits pass as before.
 
+- **`write-component!` is split into a check and a write.**
+  `component-writes` checks a component's values and returns what to write
+  without touching an entity, and `apply-writes!` writes them. `entity!`
+  and `anon!` run the check for every arg (`checked-args`), then create the
+  entity and apply the args (`apply-args!`). A tag or pair arg is checked
+  with `known-id`, so checking doesn't create it.
+
 ### Fixed
 
 - **An optional query term (`?Velocity`) binds `nil` where it isn't set.**
@@ -188,3 +195,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and for `entity!` and `anon!` args. flecs' tags and traits, such as
   `:Prefab`, `:Singleton` and `[:ChildOf parent]`, can be added and
   removed as before.
+
+- **A failed `entity!` or `anon!` changes nothing.** Each component's
+  values were already all-or-nothing, but the args were applied in order,
+  so a bad value in a later arg left the entity created, with the earlier
+  tags, pairs and components on it and their observers fired. Every arg is
+  now checked before the entity is created or any arg applied: bad
+  component values, and flecs' own components as args. A tag named only in
+  a failed call isn't created either. An observer that throws while the
+  args are being applied can still leave the earlier ones applied.
+
+- **`nil` args to `entity!` and `anon!` are skipped.** The args stopped at
+  the first `nil`, and everything after it was ignored without an error,
+  so `(entity! w :e (when boss? :Boss) Health {:hp 100})` never set Health
+  when the `when` gave `nil`. Optional args can now be written that way.

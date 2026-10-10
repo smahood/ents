@@ -253,38 +253,48 @@
 
       :else t)))
 
-(defn- write-component!
-  "Write component values: ensure (adds a missing component zeroed, emitting
-  OnAdd), merge `m` over it in place, then mark it modified so OnSet observers
-  fire with the final values. Fields not in `m` keep their current value.
+(defn- component-writes
+  "Check component values `m` for `c` without touching any entity, and
+  return [id writes], each write [type value offset], for `apply-writes!`.
 
   A component flecs created with the world (flecs.core.Component and the
-  like) throws: writing one would corrupt flecs. Every value is checked
-  first: an unknown, array or struct field throws, and
-  each value is written to a scratch copy, so one jolt.ffi rejects (out of
-  range, wrong type) throws before the entity or its component is touched.
-  The real write then goes to each field's offset in the ensured component,
-  which inside a system is flecs' queued value, so partial sets in one run
-  merge."
-  [w e ^Component c m]
+  like) throws: writing one would corrupt flecs. An unknown, array or struct
+  field throws, and each value is written to a scratch copy, so one jolt.ffi
+  rejects (out of range, wrong type) throws here."
+  [w ^Component c m]
   (let [id (comp-id w c)
         _ (when (f/builtin? w id)
             (throw (ex-info (str "component " (:name c) " is one of flecs' own; ents reads"
                                  " flecs' components but doesn't write them")
                             {:component (:name c)})))
-        types (into {} (:fields c))
-        writes (ffi/with-alloc [scratch (:size c)]
-                 (mapv (fn [[k v]]
-                         (let [t (scalar-type c types k)
-                               off (ffi/field-offset (:layout c) k)
-                               v (coerce v t)]
-                           (ffi/write scratch t v off)
-                           [t v off]))
-                       m))
-        p (guarded w (f/ensure-ptr w e id (:size c)))]
+        types (into {} (:fields c))]
+    [id (ffi/with-alloc [scratch (:size c)]
+          (mapv (fn [[k v]]
+                  (let [t (scalar-type c types k)
+                        off (ffi/field-offset (:layout c) k)
+                        v (coerce v t)]
+                    (ffi/write scratch t v off)
+                    [t v off]))
+                m))]))
+
+(defn- apply-writes!
+  "Write checked values (from `component-writes`) to entity `e`: ensure (adds
+  a missing component zeroed, emitting OnAdd), write each value at its
+  offset, then mark it modified so OnSet observers fire with the final
+  values. Fields not written keep their current value. Inside a system the
+  ensured component is flecs' queued value, so partial sets in one run
+  merge."
+  [w e ^Component c [id writes]]
+  (let [p (guarded w (f/ensure-ptr w e id (:size c)))]
     (doseq [[t v off] writes] (ffi/write p t v off))
     (guarded w (f/modified! w e id))
     e))
+
+(defn- write-component!
+  "Write component values `m` to entity `e`, checking every one before any
+  is written."
+  [w e ^Component c m]
+  (apply-writes! w e c (component-writes w c m)))
 
 (defn- flecs-own!
   "Throw for one of flecs' own entities: `what` and `whats` name the
@@ -306,30 +316,54 @@
       (flecs-own! w rel "component" "components" op)
       x)))
 
-(defn- apply-entity-args!
-  [w id args]
-  (loop [[arg & more] args]
-    (when (some? arg)
-      (cond
-        (and (instance? Component arg) (map? (first more)))
-        (do (write-component! w id arg (first more))
-            (recur (next more)))
+(defn- checked-args
+  "Parse and check entity!/anon! args before the entity is created or any
+  arg applied: [:set Component [id writes]] for component values, checked
+  as set-c! checks them, and [:add arg] for anything else, refused here if
+  it (or a pair's relationship) is one of flecs' own components. Tags that
+  don't exist yet aren't created here. nil args are skipped, so optional
+  args can be written as (when boss? :Boss)."
+  [w args]
+  (loop [[arg & more :as args] args
+         ops []]
+    (cond
+      (empty? args) ops
 
-        :else (do (guarded w (f/add-id! w id (addable w (eid w arg) "add")))
-                  (recur more)))))
+      (nil? arg) (recur more ops)
+
+      (and (instance? Component arg) (map? (first more)))
+      (recur (next more) (conj ops [:set arg (component-writes w arg (first more))]))
+
+      :else
+      (do (when-let [x (known-id w (if (vector? arg) (first arg) arg))]
+            (addable w x "add"))
+          (recur more (conj ops [:add arg]))))))
+
+(defn- apply-args!
+  [w id ops]
+  (doseq [[op x checked] ops]
+    (case op
+      :set (apply-writes! w id x checked)
+      :add (guarded w (f/add-id! w id (eid w x)))))
   id)
 
 (defn entity!
   "Create (or find) an entity by name. Extra args add tags/pairs/components:
   :tag adds the tag, [Rel Tgt] adds a pair, Position adds the component,
-  Position {:x 1} sets component values. Returns the entity id."
+  Position {:x 1} sets component values. nil args are skipped. Returns the
+  entity id.
+
+  Every arg is checked before the entity is created or any arg applied, so
+  a bad value throws with nothing changed."
   [w e & args]
-  (apply-entity-args! w (live w (eid w e)) args))
+  (let [ops (checked-args w args)]
+    (apply-args! w (live w (eid w e)) ops)))
 
 (defn anon!
-  "A new anonymous entity. Same arg conventions as `entity!`."
+  "A new anonymous entity. Same arg conventions, and checks, as `entity!`."
   [w & args]
-  (apply entity! w (f/anon* w) args))
+  (let [ops (checked-args w args)]
+    (apply-args! w (f/anon* w) ops)))
 
 (defn get-c
   "Read a component's value as a map: (get-c w :player Position). nil when the

@@ -295,7 +295,76 @@
         (is (thrown? Exception (ec/set-c! w :f Stats {:a 1 :c 300})))
         (is (false? (ec/has? w :f Stats)))
         (is (thrown? Exception (ec/entity! w :g Stats {:a 1 :c 300})))
-        (is (false? (ec/has? w :g Stats)))))))
+        (is (zero? (ec/ent w :g)) "entity! doesn't create the entity either")))))
+
+(deftest failed-entity-applies-nothing
+  ;; every arg is checked before the entity is created or any arg applied
+  (ec/with-world w
+    (let [sets (atom 0)]
+      (ec/observer! w :o [p Position :events #{:set}] (swap! sets inc))
+      (testing "a new entity isn't created"
+        (is (thrown? Exception (ec/entity! w :e :tagged Position {:x 1} Stats {:c 300})))
+        (is (zero? (ec/ent w :e)))
+        (is (zero? (ec/ent w :tagged)) "a tag named only in the failed call isn't created"))
+      (testing "an existing entity is left as it was"
+        (ec/entity! w :f)
+        (is (thrown? Exception (ec/entity! w :f :tagged [:likes :g] Position {:x 1} Stats {:c 300})))
+        (is (thrown-with-msg? Exception #"one of flecs' own"
+                              (ec/entity! w :f Position {:x 1} CoreComponent)))
+        (is (false? (ec/has? w :f Position)))
+        (is (false? (ec/has? w :f :tagged)))
+        (is (false? (ec/has? w :f [:likes :g]))))
+      (testing "anon!"
+        (is (thrown? Exception (ec/anon! w Position {:x 1} Stats {:c 300}))))
+      (is (= 0 (ec/count-q w "Position")))
+      (is (= 0 @sets)))))
+
+(deftest entity-args-edges
+  (ec/with-world w
+    (ec/entity! w :f)
+    (testing "a flecs component as a pair's relationship, with a new target"
+      (is (thrown-with-msg? Exception #"one of flecs' own"
+                            (ec/entity! w :f [CoreComponent :newtarget])))
+      (is (zero? (ec/ent w :newtarget))))
+    (testing "a failed anon! doesn't create an entity"
+      ;; components registered first, so checking registers nothing new
+      (ec/comp-id w Position)
+      (ec/comp-id w Stats)
+      (let [a (ec/anon! w)
+            _ (is (thrown? Exception (ec/anon! w Position {:x 1} Stats {:c 300})))
+            b (ec/anon! w)]
+        (is (= (inc a) b))))
+    (testing "a bad name or dead entity throws before any arg is applied"
+      (is (thrown-with-msg? Exception #"reserved" (ec/entity! w :* :newtag Position {:x 1})))
+      (let [d (ec/anon! w)]
+        (ec/delete! w d)
+        (is (thrown-with-msg? Exception #"no such entity" (ec/entity! w d :newtag))))
+      (is (zero? (ec/ent w :newtag))))
+    (testing "the same component twice merges"
+      (is (= {:x 1.0 :y 2.0}
+             (ec/get-c w (ec/entity! w :g Position {:x 1} Position {:y 2}) Position))))
+    (testing "nil args are skipped, so optional args can be written with when"
+      (let [h (ec/entity! w :h :t1 nil :t2 (when false :boss) Health {:hp 5} nil)]
+        (is (ec/has? w h :t1))
+        (is (ec/has? w h :t2))
+        (is (= {:hp 5} (ec/get-c w h Health))))
+      (let [a (ec/anon! w nil :t3 nil)]
+        (is (ec/has? w a :t3)))))
+  (testing "a bad entity! in a system body changes nothing"
+    (ec/with-world w
+      (ec/entity! w :a Position {:x 0 :y 0})
+      (ec/system! w :s [p Position e :ent]
+        (ec/entity! w e :sys-tag Health {:hp 1} Stats {:c 300}))
+      (is (thrown? Exception (ec/progress w 0.1)))
+      (is (false? (ec/has? w :a :sys-tag)))
+      (is (false? (ec/has? w :a Health)))))
+  (testing "known limit: an observer that throws while args are applied"
+    ;; checking can't foresee an observer's throw, so the args before it
+    ;; stay applied
+    (ec/with-world w
+      (ec/observer! w :o [h Health :events #{:add}] (throw (ex-info "observer boom" {})))
+      (is (thrown-with-msg? Exception #"observer boom" (ec/entity! w :k :early Health {:hp 1})))
+      (is (ec/has? w :k :early)))))
 
 (deftest set-c-field-errors
   ;; set-c! names the field it can't write, and writes nothing
