@@ -393,6 +393,33 @@
       (is (thrown-with-msg? Exception #"size 8 and alignment 4.*size 8 and alignment 8"
                             (ec/comp-id w CoreMisaligned))))))
 
+(deftest component-name-in-use
+  ;; flecs can't make an entity that's already in use as a tag or as a
+  ;; pair's relationship into a component with a size. Removing the tag
+  ;; doesn't help: flecs still counts it as in use.
+  (doseq [[label use] [["a tag" (fn [w n] (ec/entity! w :t (keyword n)))]
+                       ["a relationship" (fn [w n] (ec/entity! w :t [(keyword n) :x]))]
+                       ["a removed tag" (fn [w n]
+                                          (ec/entity! w :t (keyword n))
+                                          (ec/remove! w :t (keyword n)))]]]
+    (testing label
+      (ec/with-world w
+        (let [C (ec/component InUse [:v :int32])]
+          (use w "InUse")
+          (is (thrown-with-msg? Exception #"component InUse can't be registered: InUse is already in use as a tag or relationship"
+                                (ec/entity! w :y C {:v 3})))
+          (is (= (ec/ent w :InUse) (:entity (ex-data (try (ec/comp-id w C) (catch Exception e e))))))
+          (testing "the world carries on"
+            (ec/entity! w :z Position {:x 1 :y 2})
+            (is (= {:x 1.0 :y 2.0} (ec/get-c w :z Position))))))))
+  (testing "used only as a pair target, the name can be a component"
+    (ec/with-world w
+      (let [Liked (ec/component Liked [:v :int32])]
+        (ec/entity! w :t [:likes :Liked])
+        (ec/entity! w :y Liked {:v 1})
+        (is (= {:v 1} (ec/get-c w :y Liked)))
+        (is (ec/has? w :t [:likes Liked]))))))
+
 (deftest redefined-layout-refused
   ;; at the REPL, re-evaluating a component's def with another field while a
   ;; world is alive gives a record whose layout no longer matches the one

@@ -60,10 +60,20 @@
         (throw (layout-mismatch n rs ra size align)))
       (let [id (f/component* w n size align)]
         (when (zero? id)
-          (let [found (f/lookup-component w n)]
-            (if (pos? found)
+          (let [found (f/lookup-component w n)
+                used (f/used-as-id w n)]
+            (cond
+              (pos? found)
               (throw (layout-mismatch n (f/component-size w found)
                                       (f/component-alignment w found) size align))
+
+              (pos? used)
+              (throw (ex-info (str "component " n " can't be registered: " n " is already in"
+                                   " use as a tag or relationship, and flecs can't give it a"
+                                   " size; name the component something else")
+                              {:component n :entity used}))
+
+              :else
               (throw (ex-info "component registration failed" {:component n})))))
         (swap! *comp-ids assoc-in [w n] [id size align])
         id))))

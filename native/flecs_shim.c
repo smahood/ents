@@ -65,6 +65,16 @@ ecs_entity_t fj_lookup_component(ecs_world_t *w, const char *name) {
   return (e && ecs_has(w, e, EcsComponent)) ? e : 0;
 }
 
+/* The entity named `name` (a full path from the root) when it isn't a
+   component but is already in use as an id: added to entities as a tag, or
+   as the relationship of a pair. flecs can't make such an entity into a
+   component with a size. 0 otherwise. */
+ecs_entity_t fj_used_as_id(ecs_world_t *w, const char *name) {
+  ecs_entity_t e = ecs_lookup_path_w_sep(w, 0, name, ".", NULL, false);
+  if (!e || ecs_has(w, e, EcsComponent)) return 0;
+  return (ecs_id_in_use(w, e) || ecs_id_in_use(w, ecs_pair(e, EcsWildcard))) ? e : 0;
+}
+
 int64_t fj_component_size(ecs_world_t *w, ecs_entity_t e) {
   const EcsComponent *c = ecs_get(w, e, EcsComponent);
   return c ? c->size : -1;
@@ -95,6 +105,7 @@ ecs_entity_t fj_component(ecs_world_t *w, const char *name, int64_t size, int64_
     const EcsComponent *c = ecs_get(w, found, EcsComponent);
     return (c->size == size && c->alignment == align) ? found : 0;
   }
+  if (fj_used_as_id(w, name)) return 0;
   ecs_entity_desc_t ed = {0};
   ed.name = name;
   ed.symbol = name;

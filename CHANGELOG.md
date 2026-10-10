@@ -78,6 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "...; a registered component's layout can't change, so define it as it
   was registered, or use a new world".
 
+- **Registering a component checks whether its name is already in use.**
+  The shim's `fj_component` refuses a name whose entity isn't a component
+  but has been used as a tag or as a pair's relationship, the same check
+  flecs makes before giving an entity a size. The new `fj_used_as_id`
+  (`f/used-as-id`) lets `comp-id` explain the refusal.
+
 ### Fixed
 
 - **An optional query term (`?Velocity`) binds `nil` where it isn't set.**
@@ -152,3 +158,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrote past it. `get-c`, `set-c!`, queries, systems and observers now
   throw the same error registration gives. Re-evaluating an identical
   `def` works as before.
+
+- **A component named like a tag or relationship that's in use is refused
+  cleanly.** Registering a component whose name was already used as a tag
+  (`(entity! w :t :InUse)`) or as a pair's relationship made flecs refuse
+  to give it a size part way through registration. flecs reported the
+  error but carried on, the following write threw "invalid memory
+  reference", the world was left mid-operation so later reads came back
+  empty, and destroying it hit a fatal assert. Registration now throws
+  "component InUse can't be registered: InUse is already in use as a tag
+  or relationship", with the entity in the ex-data. flecs counts a tag as
+  in use even after it's been removed, so the name can't become a
+  component then either. A name used only as a pair's target is fine.
