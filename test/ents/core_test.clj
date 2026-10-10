@@ -505,6 +505,33 @@
       (ec/set-c! w :e Health {:hp 1})
       (is (= {:hp 1} (ec/get-c w :e Health))))))
 
+(deftest flecs-entities-protected
+  ;; adding or removing one of flecs' own data components, or deleting
+  ;; anything flecs owns, corrupts flecs or aborts the process
+  (ec/with-world w
+    (ec/entity! w :a Position {:x 1 :y 2})
+    (ec/entity! w :e)
+    (doseq [[label f] [["add!" #(ec/add! w :e CoreComponent)]
+                       ["add! as a pair's relationship" #(ec/add! w :e [CoreComponent :x])]
+                       ["entity!" #(ec/entity! w :e CoreComponent)]
+                       ["remove!" #(ec/remove! w Position CoreComponent)]
+                       ["delete! a component" #(ec/delete! w CoreComponent)]
+                       ["delete! by path" #(ec/delete! w "flecs.core.Component")]
+                       ["delete! a tag" #(ec/delete! w :ChildOf)]]]
+      (is (thrown-with-msg? Exception #"one of flecs' own" (f)) label))
+    (is (false? (ec/has? w :e CoreComponent)))
+    (is (= {:size 8 :alignment 4} (ec/get-c w Position CoreComponent)))
+    (testing "flecs' tags and traits stay usable"
+      (ec/entity! w :p :Prefab)
+      (is (ec/has? w :p :Prefab))
+      (ec/remove! w :p :Prefab)
+      (is (false? (ec/has? w :p :Prefab)))
+      (let [kid (ec/entity! w :kid [:ChildOf :a])]
+        (is (= (ec/ent w :a) (ec/target w kid :ChildOf))))
+      (let [Gravity (ec/component Gravity [:g :float])]
+        (ec/add! w Gravity :Singleton)
+        (is (ec/has? w Gravity :Singleton))))))
+
 (deftest registered-layouts
   ;; flecs is given the size and alignment jolt.ffi computes for the layout
   (ec/with-world w

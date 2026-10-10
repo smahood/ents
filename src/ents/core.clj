@@ -286,6 +286,26 @@
     (guarded w (f/modified! w e id))
     e))
 
+(defn- flecs-own!
+  "Throw for one of flecs' own entities: `what` and `whats` name the
+  entity's kind, `op` what ents won't do to it."
+  [w id what whats op]
+  (let [n (f/name* w id)]
+    (throw (ex-info (str what " " n " is one of flecs' own; ents doesn't " op
+                         " flecs' " whats)
+                    {:entity n :id id}))))
+
+(defn- addable
+  "Id `x` (resolved), unless it's one of flecs' own data components, or a
+  pair whose relationship is one: adding or removing one of those changes
+  flecs' own records, such as a component's size. flecs' tags and traits
+  (Prefab, Singleton, a ChildOf pair) are returned as usual."
+  [w x op]
+  (let [rel (if (f/pair? x) (f/pair-first w x) x)]
+    (if (and (f/builtin? w rel) (pos? (f/component-size w rel)))
+      (flecs-own! w rel "component" "components" op)
+      x)))
+
 (defn- apply-entity-args!
   [w id args]
   (loop [[arg & more] args]
@@ -295,7 +315,8 @@
         (do (write-component! w id arg (first more))
             (recur (next more)))
 
-        :else (do (guarded w (f/add-id! w id (eid w arg))) (recur more)))))
+        :else (do (guarded w (f/add-id! w id (addable w (eid w arg) "add")))
+                  (recur more)))))
   id)
 
 (defn entity!
@@ -328,14 +349,14 @@
 (defn add!
   "Add an id: tag keyword, Component, or pair vector [Rel Tgt]. Tags are
   created on first use."
-  [w e x] (let [id (live w e)] (guarded w (f/add-id! w id (eid w x)))))
+  [w e x] (let [id (live w e)] (guarded w (f/add-id! w id (addable w (eid w x) "add")))))
 
 (defn remove!
   "Remove an id: tag keyword, Component, or pair vector."
   [w e x]
   (let [id (live w e)]
     (when-let [x-id (known-id w x)]
-      (guarded w (f/remove-id! w id x-id)))))
+      (guarded w (f/remove-id! w id (addable w x-id "remove"))))))
 
 (defn has?
   "True when the entity has the id."
@@ -343,7 +364,13 @@
   (let [id (live w e)]
     (boolean (some->> (known-id w x) (f/has-id? w id)))))
 
-(defn delete! [w e] (let [id (live w e)] (guarded w (f/delete! w id))))
+(defn delete!
+  "Delete an entity. flecs' own entities (its components, tags and traits)
+  can't be deleted."
+  [w e]
+  (let [id (live w e)]
+    (when (f/builtin? w id) (flecs-own! w id "entity" "entities" "delete"))
+    (guarded w (f/delete! w id))))
 
 (defn alive? [w e] (some? (known-id w e)))
 (defn valid? [w e]

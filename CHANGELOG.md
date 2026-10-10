@@ -84,6 +84,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flecs makes before giving an entity a size. The new `fj_used_as_id`
   (`f/used-as-id`) lets `comp-id` explain the refusal.
 
+- **`add!`, `remove!`, `entity!` and `delete!` check for flecs' own
+  entities.** Adding or removing an id checks whether it, or a pair's
+  relationship, is one of flecs' own components with a size (`f/builtin?`
+  and `f/component-size`), and `delete!` checks whether the entity is one
+  of flecs' own. flecs' tags and traits pass as before.
+
 ### Fixed
 
 - **An optional query term (`?Velocity`) binds `nil` where it isn't set.**
@@ -170,3 +176,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or relationship", with the entity in the ex-data. flecs counts a tag as
   in use even after it's been removed, so the name can't become a
   component then either. A name used only as a pair's target is fine.
+
+- **flecs' own entities can't be deleted, and its components can't be
+  added or removed.** Since flecs' own components can be named from ents,
+  `(delete! w CoreComponent)` or `(delete! w :ChildOf)` aborted the
+  process, `(remove! w Position CoreComponent)` silently took Position's
+  component record away, and `(add! w :e CoreComponent)` turned `:e` into
+  a component of size 0. These now throw, for example "component
+  Component is one of flecs' own; ents doesn't remove flecs' components".
+  The same goes for one of flecs' components as a pair's relationship,
+  and for `entity!` and `anon!` args. flecs' tags and traits, such as
+  `:Prefab`, `:Singleton` and `[:ChildOf parent]`, can be added and
+  removed as before.
