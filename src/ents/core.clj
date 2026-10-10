@@ -37,9 +37,22 @@
   [w ^Component c]
   (or (some-> (get-in @*comp-ids [w (:name c)])
               (as-> id (when (f/is-alive? w id) id)))
-      (let [id (f/component* w (:name c) (:size c) (ffi/layout-alignment (:layout c)))]
+      (let [n (:name c)
+            size (:size c)
+            align (ffi/layout-alignment (:layout c))
+            id (f/component* w n size align)]
         (when (zero? id)
-          (throw (ex-info "component registration failed" {:component (:name c)})))
+          (let [found (f/lookup-component w n)]
+            (if (pos? found)
+              (let [rs (f/component-size w found)
+                    ra (f/component-alignment w found)]
+                (throw (ex-info (str "component " n " is already registered with size " rs
+                                     " and alignment " ra ", but this definition has size "
+                                     size " and alignment " align)
+                                {:component n
+                                 :registered {:size rs :alignment ra}
+                                 :defined {:size size :alignment align}})))
+              (throw (ex-info "component registration failed" {:component n})))))
         (swap! *comp-ids assoc-in [w (:name c)] id)
         id)))
 
@@ -223,7 +236,9 @@
   OnAdd), merge `m` over it in place, then mark it modified so OnSet observers
   fire with the final values. Fields not in `m` keep their current value.
 
-  Every value is checked first: an unknown, array or struct field throws, and
+  A component flecs created with the world (flecs.core.Component and the
+  like) throws: writing one would corrupt flecs. Every value is checked
+  first: an unknown, array or struct field throws, and
   each value is written to a scratch copy, so one jolt.ffi rejects (out of
   range, wrong type) throws before the entity or its component is touched.
   The real write then goes to each field's offset in the ensured component,
@@ -231,6 +246,10 @@
   merge."
   [w e ^Component c m]
   (let [id (comp-id w c)
+        _ (when (f/builtin? w id)
+            (throw (ex-info (str "component " (:name c) " is one of flecs' own; ents reads"
+                                 " flecs' components but doesn't write them")
+                            {:component (:name c)})))
         types (into {} (:fields c))
         writes (ffi/with-alloc [scratch (:size c)]
                  (mapv (fn [[k v]]

@@ -53,6 +53,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holds `:component` and `:field`, and `:type` for an array or struct
   field. Writing those fields never worked; only the message is new.
 
+- **Registering a component looks for an existing one first.** The shim's
+  `fj_component` looks the name up as a full path from the root, then as a
+  C symbol, and returns an existing component whose size and alignment
+  match, without setting ents' zeroing constructor on it. It refuses one
+  that doesn't match. A short name isn't searched for along flecs' lookup
+  path, so a component named `Poly` is still a new component, not
+  `flecs.core.Poly`. The shim gains `fj_lookup_component`,
+  `fj_component_size` and `fj_component_alignment`, bound in `ents.ffi` as
+  `lookup-component`, `component-size` and `component-alignment`.
+
+- **A world records what flecs created for itself.** `fj_init` keeps the
+  last component id and the largest entity id as they are when `ecs_init`
+  returns, in the world's binding context, which flecs frees with the
+  world. `fj_is_builtin` (`f/builtin?`) checks an id against them, so
+  everything flecs created with the world, core and addons, counts as
+  flecs' own, and C modules imported later don't.
+
 ### Fixed
 
 - **An optional query term (`?Velocity`) binds `nil` where it isn't set.**
@@ -91,3 +108,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing is written and nothing is added unless every value can be.
   Values jolt.ffi accepts but wraps, such as `-1` into a `:uint32`, are
   still written as jolt writes them.
+
+- **Defining a component that flecs or a C module already registered no
+  longer aborts the process.** `fj_component` always registered the ents
+  name as both the name and the C symbol. When a component of that name
+  existed with another C symbol, such as `flecs.core.Component`
+  (`EcsComponent`) or any component a flecs C module registers, flecs hit a
+  fatal assert, whether the ents component was named by path or by C
+  symbol. `FLECS_SOFT_ASSERT` doesn't cover it. ents now reuses the
+  existing component when its layout matches, keeping its own hooks, so
+  components from C modules can be read and written from ents:
+
+  ```clojure
+  (def CoreComponent (ec/component flecs.core.Component [:size :int32] [:alignment :int32]))
+  (ec/get-c w Position CoreComponent) ;=> {:size 8, :alignment 4}
+  ```
+
+  A different layout throws, giving both: "component flecs.core.Component
+  is already registered with size 8 and alignment 4, but this definition
+  has size 4 and alignment 4", with `:registered` and `:defined` in the
+  ex-data.
+
+  flecs' own components can be read but not written: `set-c!` and
+  `entity!` values throw "component flecs.core.Component is one of flecs'
+  own", since writing one would corrupt flecs (`{:size 99}` on Position's
+  record led to a fatal assert). Components of C modules imported after
+  the world was created can be written.

@@ -23,6 +23,10 @@ bool fj_is_alive(ecs_world_t *w, ecs_entity_t e);
 
 /* components (runtime-registered, like vybe's) */
 ecs_entity_t fj_component(ecs_world_t *w, const char *name, int64_t size, int64_t align);
+ecs_entity_t fj_lookup_component(ecs_world_t *w, const char *name);
+bool fj_is_builtin(ecs_world_t *w, ecs_entity_t e);
+int64_t fj_component_size(ecs_world_t *w, ecs_entity_t e);
+int64_t fj_component_alignment(ecs_world_t *w, ecs_entity_t e);
 
 /* ids: add/remove/has, pairs */
 void fj_add_id(ecs_world_t *w, ecs_entity_t e, ecs_id_t id);

@@ -4,7 +4,23 @@
 #include <string.h>
 #include <stdlib.h>
 
-ecs_world_t* fj_init(void) { return ecs_init(); }
+/* What a world looked like when ecs_init returned: everything flecs creates
+   for itself is below these. Components come from the low id range
+   (1..FLECS_HI_COMPONENT_ID) and other entities from above it, so both
+   counters are kept. */
+typedef struct {
+  ecs_entity_t last_component_id;
+  ecs_entity_t max_id;
+} fj_world_ctx_t;
+
+ecs_world_t* fj_init(void) {
+  ecs_world_t *w = ecs_init();
+  fj_world_ctx_t *ctx = malloc(sizeof(fj_world_ctx_t));
+  ctx->last_component_id = ecs_get_world_info(w)->last_component_id;
+  ctx->max_id = ecs_get_max_id(w);
+  ecs_set_binding_ctx(w, ctx, free);
+  return w;
+}
 
 void fj_fini(ecs_world_t *w) { ecs_fini(w); }
 
@@ -38,7 +54,47 @@ static void fj_zero_ctor(void *ptr, int32_t count, const ecs_type_info_t *ti) {
   memset(ptr, 0, (size_t)ti->size * (size_t)count);
 }
 
+/* An existing component named `name`, by its full path from the root or by
+   C symbol: one flecs or a C module registered (flecs.core.Component is also
+   EcsComponent), or one ents registered before. 0 when there's none. The path
+   isn't searched for along flecs' lookup path, so a short name such as Poly
+   doesn't find flecs.core.Poly. */
+ecs_entity_t fj_lookup_component(ecs_world_t *w, const char *name) {
+  ecs_entity_t e = ecs_lookup_path_w_sep(w, 0, name, ".", NULL, false);
+  if (!e) e = ecs_lookup_symbol(w, name, false, false);
+  return (e && ecs_has(w, e, EcsComponent)) ? e : 0;
+}
+
+int64_t fj_component_size(ecs_world_t *w, ecs_entity_t e) {
+  const EcsComponent *c = ecs_get(w, e, EcsComponent);
+  return c ? c->size : -1;
+}
+
+int64_t fj_component_alignment(ecs_world_t *w, ecs_entity_t e) {
+  const EcsComponent *c = ecs_get(w, e, EcsComponent);
+  return c ? c->alignment : -1;
+}
+
+/* Whether `e` is one of flecs' own entities, created with the world: core
+   and addons (flecs.core, flecs.pipeline, flecs.meta, ...), not a C module
+   imported later. */
+bool fj_is_builtin(ecs_world_t *w, ecs_entity_t e) {
+  const fj_world_ctx_t *ctx = ecs_get_binding_ctx(w);
+  if (!ctx) return false;
+  ecs_entity_t i = (uint32_t)e;
+  return i <= ctx->last_component_id ||
+         (i > FLECS_HI_COMPONENT_ID && i <= ctx->max_id);
+}
+
 ecs_entity_t fj_component(ecs_world_t *w, const char *name, int64_t size, int64_t align) {
+  /* Reuse an existing component rather than redefine it: ecs_entity_init
+     aborts on a name whose C symbol differs, and an existing component keeps
+     its own hooks. A different layout is refused. */
+  ecs_entity_t found = fj_lookup_component(w, name);
+  if (found) {
+    const EcsComponent *c = ecs_get(w, found, EcsComponent);
+    return (c->size == size && c->alignment == align) ? found : 0;
+  }
   ecs_entity_desc_t ed = {0};
   ed.name = name;
   ed.symbol = name;

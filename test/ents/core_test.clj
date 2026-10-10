@@ -254,6 +254,16 @@
 (def Shapes (ec/component Shapes [:v [:array :float 3]]
                           [:pos [:struct [[:x :float] [:y :float]]]] [:n :int32]))
 
+;; flecs' own Component component, by path and by C symbol, as a C module's
+;; components would be defined from ents
+(def CoreComponent (ec/component flecs.core.Component [:size :int32] [:alignment :int32]))
+(def ByCSymbol (ec/component EcsComponent [:size :int32] [:alignment :int32]))
+(def CoreTooSmall (ec/component flecs.core.Component [:size :int32]))
+(def CoreMisaligned (ec/component flecs.core.Component [:both :int64]))
+;; shares only its short name with flecs.core.Poly
+(def ShortPoly (ec/component Poly [:v :int32]))
+(def BySymbolTooSmall (ec/component EcsComponent [:size :int32]))
+
 (deftest partial-set-zeroes-new-component
   (ec/with-world w
     (dotimes [_ 50] (ec/anon! w Position {:x 99999.5 :y 12345.5}))
@@ -352,6 +362,106 @@
       (is (= vs (ec/get-c w e Wide)))
       (ec/set-c! w e Wide {:u 0 :i 9223372036854775807})
       (is (= {:u 0 :i 9223372036854775807 :d 1.5e300} (ec/get-c w e Wide))))))
+
+(deftest reuse-registered-component
+  ;; a component flecs or a C module already registered, named by path or
+  ;; by C symbol, is reused rather than redefined, which aborted the process
+  (ec/with-world w
+    (let [id (ec/ent w "flecs.core.Component")]
+      (is (pos? id))
+      (is (= id (ec/comp-id w CoreComponent)))
+      (is (= id (ec/comp-id w ByCSymbol)))
+      (is (= {:size 8 :alignment 4} (ec/get-c w Position CoreComponent)))
+      (is (= {:size 8 :alignment 4} (ec/get-c w Position ByCSymbol)))))
+  (testing "a short name that matches a flecs.core component is a new component"
+    (ec/with-world w
+      (let [id (ec/comp-id w ShortPoly)]
+        (is (not= (ec/ent w "flecs.core.Poly") id))
+        (is (= "Poly" (ec/ent-name-of w id)))
+        (ec/entity! w :e ShortPoly {:v 3})
+        (is (= {:v 3} (ec/get-c w :e ShortPoly))))))
+  (testing "a different layout is refused, naming both"
+    ;; each in a fresh world: a matching definition of the same name would
+    ;; be cached, and a cache hit isn't checked (#10)
+    (ec/with-world w
+      (is (thrown-with-msg? Exception #"size 8 and alignment 4.*size 4 and alignment 4"
+                            (ec/comp-id w CoreTooSmall))))
+    (ec/with-world w
+      (is (thrown-with-msg? Exception #"size 8 and alignment 4.*size 8 and alignment 8"
+                            (ec/comp-id w CoreMisaligned))))))
+
+(deftest registered-component-edges
+  (testing "a definition by C symbol is checked even when one by path is cached"
+    (ec/with-world w
+      (ec/comp-id w CoreComponent)
+      (is (thrown-with-msg? Exception #"size 8 and alignment 4.*size 4 and alignment 4"
+                            (ec/comp-id w BySymbolTooSmall)))))
+  (testing "a plain entity with the component's name becomes the component"
+    (ec/with-world w
+      (let [Named (ec/component Named [:v :int32])
+            e (ec/entity! w :Named)]
+        (is (= e (ec/comp-id w Named)))
+        (ec/entity! w :x Named {:v 2})
+        (is (= {:v 2} (ec/get-c w :x Named))))))
+  (testing "registration flecs refuses, with nothing to reuse"
+    (ec/with-world w
+      (let [Unregistered (ec/component Unregistered [:v :int32])]
+        (with-redefs [f/component* (fn [& _] 0)]
+          (is (= ["component registration failed" {:component "Unregistered"}]
+                 (try (ec/comp-id w Unregistered) nil
+                      (catch Exception e [(ex-message e) (ex-data e)]))))))))
+  (testing "registered components are found again once ents' id cache is lost"
+    ;; as reloading ents.core does (#11)
+    (ec/with-world w
+      (let [p (ec/comp-id w Position)
+            c (ec/comp-id w CoreComponent)]
+        (ec/entity! w :a Position {:x 1 :y 2})
+        (swap! @#'ec/*comp-ids dissoc w)
+        (is (= p (ec/comp-id w Position)))
+        (is (= c (ec/comp-id w CoreComponent)))
+        (is (= {:x 1.0 :y 2.0} (ec/get-c w :a Position)))))))
+
+(deftest query-reused-component
+  ;; queries, systems and observers read a reused component like any other
+  (ec/with-world w
+    (let [pos (ec/comp-id w Position)
+          rows (ec/with-query w [c CoreComponent e :ent] [e c])
+          ran (atom nil)
+          seen (atom [])]
+      (is (some #{[pos {:size 8 :alignment 4}]} rows))
+      (is (< 1 (count rows)))
+      (ec/system! w :s [c CoreComponent e :ent]
+        (when (= e pos) (reset! ran c)))
+      (ec/progress w 0.1)
+      (is (= {:size 8 :alignment 4} @ran))
+      (ec/observer! w :o [c CoreComponent e :ent :events #{:set}]
+        (swap! seen conj [e c]))
+      (let [h (ec/comp-id w Health)]
+        (is (some #{[h {:size 4 :alignment 4}]} @seen))))))
+
+(deftest flecs-components-not-written
+  ;; flecs' own components can be read, but writing one would corrupt flecs
+  (ec/with-world w
+    (doseq [c [CoreComponent ByCSymbol]]
+      (is (thrown-with-msg? Exception #"one of flecs' own"
+                            (ec/set-c! w Position c {:size 99}))
+          (:name c)))
+    (is (= {:size 8 :alignment 4} (ec/get-c w Position CoreComponent)))
+    (ec/entity! w :e)
+    (is (thrown-with-msg? Exception #"one of flecs' own"
+                          (ec/entity! w :e CoreComponent {:size 1})))
+    (is (false? (ec/has? w :e CoreComponent)))
+    (testing "components ents registers are written as usual"
+      (ec/set-c! w :e Health {:hp 1})
+      (is (= {:hp 1} (ec/get-c w :e Health))))))
+
+(deftest registered-layouts
+  ;; flecs is given the size and alignment jolt.ffi computes for the layout
+  (ec/with-world w
+    (let [Mixed (ec/component Mixed [:a :uint8] [:b :double])]
+      (doseq [[c align] [[Flag 1] [Health 4] [Stats 4] [Wide 8] [CTypes 8] [Mixed 8]]]
+        (is (= {:size (:size c) :alignment align} (ec/get-c w c CoreComponent))
+            (:name c))))))
 
 (deftest bool-fields
   ;; a :bool stores by jolt truthiness: nil and false store false, anything

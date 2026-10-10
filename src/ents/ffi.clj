@@ -20,7 +20,11 @@
 (ffi/defcfn is-alive? "fj_is_alive" [:pointer :uint64] :bool)
 
 ;; --- components / ids ---------------------------------------------------------
-(ffi/defcfn component* "fj_component" [:pointer :string :int64 :int64] :uint64)
+(ffi/defcfn component*          "fj_component"           [:pointer :string :int64 :int64] :uint64)
+(ffi/defcfn lookup-component    "fj_lookup_component"    [:pointer :string] :uint64)
+(ffi/defcfn component-size      "fj_component_size"      [:pointer :uint64] :int64)
+(ffi/defcfn component-alignment "fj_component_alignment" [:pointer :uint64] :int64)
+(ffi/defcfn builtin?            "fj_is_builtin"          [:pointer :uint64] :bool)
 (ffi/defcfn add-id!    "fj_add_id"    [:pointer :uint64 :uint64] :void)
 (ffi/defcfn remove-id! "fj_remove_id" [:pointer :uint64 :uint64] :void)
 (ffi/defcfn has-id?    "fj_has_id"    [:pointer :uint64 :uint64] :bool)
