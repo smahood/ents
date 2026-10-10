@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expr passed to `iter-rows` is reported as written, `{:expr ...}`, as
   before.
 
+- **Component alignment comes from the jolt.ffi layout.** ents looked each
+  field type up in its own alignment table, which only had the sized
+  numeric types. It now uses `ffi/layout-alignment`, and the table is
+  gone. `coerce` truncates a double for the integer type names as well as
+  the sized ones.
+
 ### Fixed
 
 - **An optional query term (`?Velocity`) binds `nil` where it isn't set.**
@@ -50,3 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than names, and the error data names each id under `:terms`. A
   hand-written expr passed to `iter-rows` or `count-q` still names its
   components, so dashed names can't appear in one.
+
+- **Components with `:bool`, `:char`, `:short`, `:int`, `:long`, `:size_t`,
+  `:pointer` and the other jolt.ffi type names work.** Any field type
+  outside the sized numeric types (`:int32`, `:float` and so on) threw
+  "nil where a java.lang.Number is required" when the component was first
+  used. A double given to an integer field of any of these types is
+  truncated, as it already was for `:int32`. `:bool` and `:char` values
+  go to jolt.ffi as they are. A `:bool` is stored by truthiness, so `nil`
+  and `false` store false and anything else stores true, `0` included. A
+  `:char` takes a char (`\A`).

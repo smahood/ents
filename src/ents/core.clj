@@ -29,14 +29,6 @@
     `(let [layout# (ffi/layout [:struct ~flds])]
        (->Component ~(str sym) layout# (ffi/layout-size layout#) ~flds))))
 
-(def ^:private align-of
-  {:float 4 :int32 4 :uint32 4 :double 8 :int64 8 :uint64 8
-   :int16 2 :uint16 2 :int8 1 :uint8 1})
-
-(defn- component-align
-  [c]
-  (transduce (map align-of) max 1 (map second (:fields c))))
-
 ;; component ids per world: {world-pointer {name id}}
 (def ^:private *comp-ids (atom {}))
 
@@ -45,7 +37,7 @@
   [w ^Component c]
   (or (some-> (get-in @*comp-ids [w (:name c)])
               (as-> id (when (f/is-alive? w id) id)))
-      (let [id (f/component* w (:name c) (:size c) (component-align c))]
+      (let [id (f/component* w (:name c) (:size c) (ffi/layout-alignment (:layout c)))]
         (when (zero? id)
           (throw (ex-info "component registration failed" {:component (:name c)})))
         (swap! *comp-ids assoc-in [w (:name c)] id)
@@ -197,11 +189,14 @@
 (defn- coerce
   "Coerce a field value to its scalar type: jolt.ffi rejects ints for :float
   fields and non-integers for integer fields. Integers pass as-is so unsigned
-  fields take their full range (jolt.ffi range-checks the write)."
+  fields take their full range (jolt.ffi range-checks the write). Other types,
+  :bool included, pass as-is: jolt.ffi stores a :bool by truthiness, so nil
+  and false store false and anything else, 0 included, stores true."
   [v t]
   (case t
     (:float :double) (double v)
-    (:int8 :uint8 :int16 :uint16 :int32 :uint32 :int64 :uint64)
+    (:int8 :uint8 :int16 :uint16 :int32 :uint32 :int64 :uint64
+     :byte :short :ushort :int :uint :long :ulong :size_t :ssize_t)
     (if (integer? v) v (long v))
     v))
 

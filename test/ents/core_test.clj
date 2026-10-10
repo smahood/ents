@@ -246,6 +246,10 @@
 ;; --- round 2: data correctness ------------------------------------------------
 
 (def Stats (ec/component Stats [:a :uint16] [:b :uint32] [:c :uint8] [:d :int8]))
+(def Flag (ec/component Flag [:on :bool]))
+(def CTypes (ec/component CTypes [:c :char] [:s :short] [:us :ushort] [:i :int]
+                          [:ui :uint] [:l :long] [:ul :ulong] [:z :size_t]
+                          [:sz :ssize_t] [:b :byte] [:p :pointer]))
 
 (deftest partial-set-zeroes-new-component
   (ec/with-world w
@@ -258,6 +262,33 @@
   (ec/with-world w
     (let [e (ec/anon! w Stats {:a 40000 :b 3000000000 :c 200 :d -5})]
       (is (= {:a 40000 :b 3000000000 :c 200 :d -5} (ec/get-c w e Stats))))))
+
+(deftest bool-fields
+  ;; a :bool stores by jolt truthiness: nil and false store false, anything
+  ;; else (0 included) stores true
+  (ec/with-world w
+    (let [e (ec/anon! w Flag {:on true})
+          stored (fn [v] (ec/set-c! w e Flag {:on v}) (:on (ec/get-c w e Flag)))]
+      (is (= {:on true} (ec/get-c w e Flag)))
+      (is (= [{:on true}] (ec/with-query w [f Flag] f)))
+      (is (false? (stored false)))
+      (is (true? (stored true)))
+      (is (false? (stored nil)))
+      (is (true? (stored 0)))
+      (is (true? (stored "no"))))))
+
+(deftest c-type-fields
+  (ec/with-world w
+    (let [vs {:c \A :s -300 :us 40000 :i -70000 :ui 4000000000 :l -5000000000
+              :ul 5000000000 :z 7 :sz -7 :b 100 :p 12345}
+          e (ec/anon! w CTypes vs)]
+      (is (= vs (ec/get-c w e CTypes)))
+      (is (= [vs] (ec/with-query w [c CTypes] c)))
+      (testing "integer fields truncate doubles, as the sized integer types do"
+        (ec/set-c! w e CTypes {:s -2.7 :us 2.7 :i -2.7 :ui 2.7 :l -2.7 :ul 2.7
+                               :z 2.7 :sz -2.7 :b 2.7})
+        (is (= (merge vs {:s -2 :us 2 :i -2 :ui 2 :l -2 :ul 2 :z 2 :sz -2 :b 2})
+               (ec/get-c w e CTypes)))))))
 
 (deftest inherited-fields
   (ec/with-world w
