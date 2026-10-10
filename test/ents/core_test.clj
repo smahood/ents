@@ -381,14 +381,37 @@
         (ec/entity! w :e ShortPoly {:v 3})
         (is (= {:v 3} (ec/get-c w :e ShortPoly))))))
   (testing "a different layout is refused, naming both"
-    ;; each in a fresh world: a matching definition of the same name would
-    ;; be cached, and a cache hit isn't checked (#10)
     (ec/with-world w
+      ;; nothing cached: flecs' registration refuses it
       (is (thrown-with-msg? Exception #"size 8 and alignment 4.*size 4 and alignment 4"
                             (ec/comp-id w CoreTooSmall))))
     (ec/with-world w
+      ;; a matching definition cached: comp-id's cache check refuses it
+      (ec/comp-id w CoreComponent)
+      (is (thrown-with-msg? Exception #"size 8 and alignment 4.*size 4 and alignment 4"
+                            (ec/comp-id w CoreTooSmall)))
       (is (thrown-with-msg? Exception #"size 8 and alignment 4.*size 8 and alignment 8"
                             (ec/comp-id w CoreMisaligned))))))
+
+(deftest redefined-layout-refused
+  ;; at the REPL, re-evaluating a component's def with another field while a
+  ;; world is alive gives a record whose layout no longer matches the one
+  ;; flecs registered; using it would read and write past flecs' storage
+  (ec/with-world w
+    (ec/entity! w :a Position {:x 1 :y 2})
+    (let [Wider (ec/component Position [:x :float] [:y :float] [:z :float])
+          Same (ec/component Position [:x :float] [:y :float])
+          msg #"component Position is already registered with size 8 and alignment 4, but this definition has size 12 and alignment 4"]
+      (is (thrown-with-msg? Exception msg (ec/get-c w :a Wider)))
+      ;; only :x, which is inside the registered 8 bytes, so the unfixed
+      ;; code can't write past them
+      (is (thrown-with-msg? Exception msg (ec/set-c! w :a Wider {:x 3})))
+      (is (thrown-with-msg? Exception msg (ec/with-query w [p Wider] p)))
+      (is (= {:x 1.0 :y 2.0} (ec/get-c w :a Position)))
+      (testing "re-evaluating an identical def is fine"
+        (is (= {:x 1.0 :y 2.0} (ec/get-c w :a Same)))
+        (ec/set-c! w :a Same {:y 5})
+        (is (= {:x 1.0 :y 5.0} (ec/get-c w :a Position)))))))
 
 (deftest registered-component-edges
   (testing "a definition by C symbol is checked even when one by path is cached"

@@ -29,32 +29,44 @@
     `(let [layout# (ffi/layout [:struct ~flds])]
        (->Component ~(str sym) layout# (ffi/layout-size layout#) ~flds))))
 
-;; component ids per world: {world-pointer {name id}}
+;; registered components per world: {world-pointer {name [id size alignment]}}
 (def ^:private *comp-ids (atom {}))
 
+(defn- layout-mismatch
+  "The error for a definition of component `n` whose size and alignment
+  differ from the registered component's. flecs can't change a registered
+  component's layout."
+  [n rs ra size align]
+  (ex-info (str "component " n " is already registered with size " rs " and alignment " ra
+                ", but this definition has size " size " and alignment " align
+                "; a registered component's layout can't change, so define it as it"
+                " was registered, or use a new world")
+           {:component n
+            :registered {:size rs :alignment ra}
+            :defined {:size size :alignment align}}))
+
 (defn comp-id
-  "The entity id of `c` in `w`, registering it on first use."
+  "The entity id of `c` in `w`, registering it on first use. Throws when
+  `c`'s layout differs from the registered component's, such as a def
+  re-evaluated at the REPL with another field."
   [w ^Component c]
-  (or (some-> (get-in @*comp-ids [w (:name c)])
-              (as-> id (when (f/is-alive? w id) id)))
-      (let [n (:name c)
-            size (:size c)
-            align (ffi/layout-alignment (:layout c))
-            id (f/component* w n size align)]
+  (let [n (:name c)
+        size (:size c)
+        align (ffi/layout-alignment (:layout c))
+        [id rs ra] (get-in @*comp-ids [w n])]
+    (if (and id (f/is-alive? w id))
+      (if (and (= size rs) (= align ra))
+        id
+        (throw (layout-mismatch n rs ra size align)))
+      (let [id (f/component* w n size align)]
         (when (zero? id)
           (let [found (f/lookup-component w n)]
             (if (pos? found)
-              (let [rs (f/component-size w found)
-                    ra (f/component-alignment w found)]
-                (throw (ex-info (str "component " n " is already registered with size " rs
-                                     " and alignment " ra ", but this definition has size "
-                                     size " and alignment " align)
-                                {:component n
-                                 :registered {:size rs :alignment ra}
-                                 :defined {:size size :alignment align}})))
+              (throw (layout-mismatch n (f/component-size w found)
+                                      (f/component-alignment w found) size align))
               (throw (ex-info "component registration failed" {:component n})))))
-        (swap! *comp-ids assoc-in [w (:name c)] id)
-        id)))
+        (swap! *comp-ids assoc-in [w n] [id size align])
+        id))))
 
 (defn- clear-comp-cache! [w] (swap! *comp-ids dissoc w))
 

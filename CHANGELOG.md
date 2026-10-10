@@ -70,6 +70,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   everything flecs created with the world, core and addons, counts as
   flecs' own, and C modules imported later don't.
 
+- **ents' component id cache holds each component's layout.** `comp-id`
+  caches `[id size alignment]` per name and world, and compares a
+  definition's size and alignment with them on every lookup, as
+  registration already did. A lookup costs about 0.2µs more. The
+  mismatch error now ends by saying a registered layout can't change:
+  "...; a registered component's layout can't change, so define it as it
+  was registered, or use a new world".
+
 ### Fixed
 
 - **An optional query term (`?Velocity`) binds `nil` where it isn't set.**
@@ -134,3 +142,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own", since writing one would corrupt flecs (`{:size 99}` on Position's
   record led to a fatal assert). Components of C modules imported after
   the world was created can be written.
+
+- **A component redefined with a different layout is refused in a world
+  that already uses it.** Re-evaluating a component's `def` at the REPL
+  with another field, while a world was alive, gave a record whose layout
+  no longer matched the one flecs had registered. ents looked the
+  component up by name and used it anyway, so `get-c` read past the end
+  of the value flecs stores, and `set-c!` hit a fatal flecs assert or
+  wrote past it. `get-c`, `set-c!`, queries, systems and observers now
+  throw the same error registration gives. Re-evaluating an identical
+  `def` works as before.
